@@ -1,0 +1,18 @@
+[package]
+name = "scribe"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "AI margin assistant for the reMarkable 2: circle your ink, hold the pen, and the page rewrites itself"
+
+[dependencies]
+libc = "0.2"
+png = "0.17"
+ab_glyph = "0.2"
+# HTTP + TLS for the oracle. Pure Rust (rustls), no OpenSSL/C — keeps the
+# binary self-contained and cross-compiles cleanly to static musl.
+ureq = { version = "2.10", default-features = false, features = ["tls"] }
+
+[profile.release]
+strip = true
+lto = true

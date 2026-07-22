@@ -1,0 +1,7 @@
+# reMarkable 2 (armv7, 32-bit). The musl target produces a fully static
+# binary that runs on the tablet without an SDK sysroot. Easiest cross-build:
+#   docker run --rm -v "$PWD":/home/rust/src messense/rust-musl-cross:armv7-musleabihf \
+#       cargo build --release
+# or:  cargo zigbuild --release --target armv7-unknown-linux-musleabihf
+[target.armv7-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"

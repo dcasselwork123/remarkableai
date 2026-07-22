@@ -1,0 +1,12 @@
+[Unit]
+Description=scribe - AI margin assistant for the reMarkable 2
+After=xochitl.service
+
+[Service]
+ExecStart=/home/root/scribe/scribe
+WorkingDirectory=/home/root/scribe
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
