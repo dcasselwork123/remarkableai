@@ -225,13 +225,20 @@ fn daemon_loop(observe_only: bool) {
                         eprintln!("scribe: an operation is already in flight — ignoring");
                     } else {
                         let circle = shadow.take(id).unwrap();
-                        if shadow.ids_in(&region).is_empty() {
-                            // Probably ink from before the daemon started —
-                            // leave the user's circle alone rather than
-                            // erasing it and then doing nothing.
+                        let zone = zone_bbox();
+                        let has_instruction = shadow
+                            .ids_in(&zone)
+                            .iter()
+                            .any(|i| !divider_ids.contains(i));
+                        if shadow.ids_in(&region).is_empty() && !has_instruction {
+                            // No target ink AND no instruction — probably a
+                            // circle around ink from before the daemon
+                            // started. Leave it alone. (An EMPTY circle plus
+                            // a zone instruction is valid: "draw a car" +
+                            // circle where it should go.)
                             eprintln!(
-                                "scribe: nothing inside the circle (ink predates the daemon?) — \
-                                 leaving it untouched"
+                                "scribe: empty circle and empty command zone — leaving it \
+                                 untouched"
                             );
                             let now_ms = t0.elapsed().as_millis() as u64;
                             shadow.add_synthetic(circle.pts, now_ms);
@@ -425,8 +432,8 @@ fn start_op(
         .into_iter()
         .filter(|i| !zone_ids.contains(i) && !divider_ids.contains(i))
         .collect();
-    if ids.is_empty() {
-        eprintln!("scribe: no target ink inside the circle (shadow may be stale) — skipping");
+    if ids.is_empty() && zone_ids.is_empty() {
+        eprintln!("scribe: no target ink and no instruction — skipping");
         return None;
     }
     // The oracle sees the whole known page (minus the real divider ink) with
@@ -537,8 +544,11 @@ fn apply_reply(
         return;
     }
 
-    // Write the reply exactly where the circled ink was.
-    let origin = (op.ink.x0.max(MARGIN), op.ink.y0.max(20));
+    // Write the reply where the circled ink was — or, for an empty circle
+    // ("draw/write something HERE"), inside the circle itself.
+    let anchor =
+        if op.ink.is_empty() { (op.region.x0, op.region.y0 + 20) } else { (op.ink.x0, op.ink.y0) };
+    let origin = (anchor.0.max(MARGIN), anchor.1.max(20));
     let max_w = (SCREEN_W as i32 - MARGIN - origin.0).max(240);
     let px = text_px();
     let bold = std::env::var("SCRIBE_BOLD").map(|v| v != "0").unwrap_or(true);

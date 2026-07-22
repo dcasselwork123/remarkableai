@@ -74,12 +74,33 @@ impl Injector {
         // brush is fat, so retracing needs only sparse waypoints — xochitl
         // erases along the segments between them. Decimating is what makes
         // erasing fast: frames = path/step instead of one per raw sample.
+        //
+        // Coverage against leftover specks: five passes offset in both
+        // perpendicular directions (alternating travel direction so the
+        // eraser never jumps — a jump would erase a line through unrelated
+        // ink), plus a scrub circle at each endpoint where ink pools.
+        let Some((&first, &last)) = pts.first().zip(pts.last()) else {
+            return Ok(());
+        };
         let step = self.step_for(self.erase_speed);
-        let sparse = decimate(pts, step);
-        let mut combined: Vec<(i32, i32)> = Vec::with_capacity(sparse.len() * 3);
-        combined.extend(sparse.iter().map(|&(x, y)| (x + 4, y + 3)));
-        combined.extend(sparse.iter().rev().map(|&(x, y)| (x - 4, y - 3)));
-        combined.extend_from_slice(&sparse);
+        let sparse = decimate(pts, step.min(8));
+        let scrub = |c: (i32, i32), out: &mut Vec<(i32, i32)>| {
+            for i in 0..=8 {
+                let a = i as f32 / 8.0 * std::f32::consts::TAU;
+                out.push((c.0 + (6.0 * a.cos()) as i32, c.1 + (6.0 * a.sin()) as i32));
+            }
+        };
+        const OFFS: [(i32, i32); 5] = [(0, 0), (4, 3), (-4, -3), (3, -4), (-3, 4)];
+        let mut combined: Vec<(i32, i32)> = Vec::with_capacity(sparse.len() * 5 + 20);
+        scrub(first, &mut combined);
+        for (k, off) in OFFS.iter().enumerate() {
+            if k % 2 == 0 {
+                combined.extend(sparse.iter().map(|&(x, y)| (x + off.0, y + off.1)));
+            } else {
+                combined.extend(sparse.iter().rev().map(|&(x, y)| (x + off.0, y + off.1)));
+            }
+        }
+        scrub(last, &mut combined);
         self.tool_stroke(&combined, BTN_TOOL_RUBBER, 2600, step)
     }
 

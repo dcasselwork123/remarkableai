@@ -29,6 +29,8 @@ the TARGET ink only: the user's own words, made legible. Correct only obvious sp
 never rephrase.\n\
 - If the TARGET ink itself is clearly an instruction addressed at you, execute it instead of \
 transcribing it.\n\
+- If the loop encloses blank paper, the user wants the instruction's output placed there: \
+output the text (or DRAW drawing) that should fill that space.\n\
 - If no loop is drawn, the target is all content above the rule.\n\
 - Keep output compact: it will be re-written in handwriting by a slow pen. Prefer short lines; \
 use \\n for line breaks and simple dashes for lists.\n\

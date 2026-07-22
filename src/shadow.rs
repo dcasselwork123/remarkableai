@@ -143,8 +143,10 @@ impl Shadow {
         id
     }
 
-    /// Ids of strokes lying (mostly) inside `region`: at least 60% of a
-    /// stroke's points must fall in the box.
+    /// Ids of strokes substantially inside `region`: at least 30% of a
+    /// stroke's points in the box. Deliberately loose — a sloppy circle
+    /// that clips the last letter of a word must still capture it, or the
+    /// erase leaves fragments behind.
     pub fn ids_in(&self, region: &BBox) -> Vec<u64> {
         let mut out = Vec::new();
         for (id, s) in &self.strokes {
@@ -152,7 +154,7 @@ impl Shadow {
                 continue;
             }
             let inside = s.pts.iter().filter(|&&(x, y)| region.contains(x, y)).count();
-            if inside * 10 >= s.pts.len() * 6 {
+            if inside * 10 >= s.pts.len() * 3 {
                 out.push(*id);
             }
         }
