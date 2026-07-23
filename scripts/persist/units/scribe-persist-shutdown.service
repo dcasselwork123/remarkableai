@@ -1,0 +1,14 @@
+[Unit]
+Description=Persist scribe units into a staged OS update (final check at shutdown)
+DefaultDependencies=no
+After=home.mount multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/bin/sh /home/root/scribe/persist/check-update.sh
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

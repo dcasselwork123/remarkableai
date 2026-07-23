@@ -19,6 +19,11 @@ install -m 644 oracle.env.example scribe.service dist/scribe/
 install -m 755 scripts/install-on-device.sh dist/scribe/
 # Alternate hand for SCRIBE_FONT (Patrick Hand is built in).
 install -m 644 fonts/DancingScript.ttf dist/scribe/
+# Update persistence (see scripts/persist/check-update.sh).
+mkdir -p dist/scribe/persist/units
+install -m 755 scripts/persist/check-update.sh dist/scribe/persist/
+install -m 644 scripts/persist/units/scribe-persist-*.service \
+               scripts/persist/units/scribe-persist-*.timer dist/scribe/persist/units/
 
 echo "staged dist/scribe/"
 echo "  1. cp your grok auth:   cp /path/to/riddle-auth.json dist/scribe/scribe-auth.json"

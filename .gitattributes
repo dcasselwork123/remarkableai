@@ -1,0 +1,7 @@
+# Everything the tablet's BusyBox sh or systemd parses must stay LF —
+# a CRLF checkout on Windows breaks install-on-device.sh and the units.
+*.sh      text eol=lf
+*.service text eol=lf
+*.timer   text eol=lf
+*.env     text eol=lf
+oracle.env.example text eol=lf

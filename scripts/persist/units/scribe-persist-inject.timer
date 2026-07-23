@@ -1,0 +1,9 @@
+[Unit]
+Description=Periodically check for a staged OS update to persist scribe into
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

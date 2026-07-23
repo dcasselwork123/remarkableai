@@ -1,0 +1,6 @@
+[Unit]
+Description=Persist scribe units into a staged OS update
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /home/root/scribe/persist/check-update.sh

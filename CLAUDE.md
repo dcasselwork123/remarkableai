@@ -121,13 +121,20 @@ docker run --rm -v "$PWD":/home/rust/src messense/rust-musl-cross:armv7-musleabi
 drawing, script, oracle parsing, and the coordinate mappings are portable.
 On Windows, docker path syntax: `-v "C:\Dev\remarkableapp2:/home/rust/src"`
 via PowerShell. `scripts/make-bundle.sh` needs a POSIX shell (Git Bash).
+**Line endings**: anything the tablet parses (`*.sh`, systemd units) must be
+LF — a CRLF checkout breaks BusyBox `sh` with `set: -: invalid option`.
+`.gitattributes` forces LF; if a script misbehaves on-device, check for `\r`
+first (`sed -i 's/\r$//'` fixes it in place).
 
 ## Deploying (the actual dev loop used)
 
 Tablet at `10.11.99.1` over USB, SSH key auth already set up. Install dir
 `/home/root/scribe/` (systemd unit `scribe.service`, installed by
-`install-on-device.sh`; survives reboots; `/etc/systemd` is wiped by OS
-updates → re-run installer). Iteration loop:
+`install-on-device.sh`; survives reboots). **OS updates are survived
+automatically** since 2026-07-23: `scripts/persist/` (ported from riddle's
+xovi-persist) injects scribe's units into a staged A/B update's rootfs via a
+5-min timer + shutdown hook — the persist units re-persist themselves too.
+If it ever misses, re-run the installer. Iteration loop:
 
 ```powershell
 Copy-Item target\armv7-unknown-linux-musleabihf\release\scribe dist\scribe\scribe -Force

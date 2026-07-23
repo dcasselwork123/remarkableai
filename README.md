@@ -60,8 +60,11 @@ in `/home/root/scribe/oracle.env` and skip the `scribe-auth.json` copy. (If
 you're not running riddle on the device, copy the freshest riddle-auth.json
 you have — the one on the tablet if it was ever used there.)
 
-An OS update wipes the systemd unit (not `/home/root`): re-run
-`install-on-device.sh` afterwards.
+OS updates are survived automatically: the installer arms a persist timer +
+shutdown hook that injects scribe's systemd units into a staged A/B update's
+rootfs before the reboot (ported from riddle's xovi-persist). If scribe was
+installed before this existed — or persistence ever misses — re-running
+`install-on-device.sh` fixes it; `/home/root` always survives updates.
 
 ## Bring-up / diagnostics (on the device)
 
