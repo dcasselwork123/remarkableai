@@ -25,9 +25,11 @@ xochitl can't tell them from a real pen.
 ## Requirements
 
 - reMarkable 2 with SSH access (stock — password in Settings → Help → About).
-- An oracle: a **Grok subscription login** (reuse `riddle-auth.json` from the
+- An oracle: a **Grok subscription login** or a **ChatGPT (Plus/Pro)
+  subscription login** (reuse `riddle-auth.json` from the
   [riddle](https://github.com/MaximeRivest/Riddle) project's `riddle-login
-  grok`) **or** any OpenAI-compatible API key for a vision model.
+  grok` / `riddle-login chatgpt`) **or** any OpenAI-compatible API key for a
+  vision model.
 - Docker (or `cargo zigbuild`) on your computer to cross-compile.
 
 No xovi/AppLoad needed (harmless if present — when the riddle app grabs the

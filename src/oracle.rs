@@ -6,8 +6,11 @@
 //!  - `SCRIBE_OPENAI_KEY` set → any OpenAI-compatible `/chat/completions`
 //!  - auth file present (grok) → xAI's API with the auto-refreshing
 //!    subscription OAuth token — the same login riddle uses.
+//!  - auth file present (chatgpt) → the Codex OAuth client's Responses-API
+//!    dialect at `chatgpt.com/backend-api/codex/responses` (streaming SSE,
+//!    accumulated into one blocking reply).
 
-use std::io;
+use std::io::{self, BufRead, BufReader};
 use std::sync::{Arc, Mutex};
 
 use crate::auth::{json_str, TokenStore};
@@ -69,6 +72,9 @@ pub struct Oracle {
     model: String,
     max_tokens: u32,
     reasoning: Option<String>,
+    /// ChatGPT subscription: speak the Codex Responses dialect instead of
+    /// `/chat/completions` (`base` is unused there — the URL is fixed).
+    codex: bool,
 }
 
 impl Oracle {
@@ -78,18 +84,26 @@ impl Oracle {
         let forced = std::env::var("SCRIBE_ORACLE").ok().map(|s| s.to_lowercase());
         match forced.as_deref() {
             Some("openai" | "http") => return Self::openai(),
-            Some("grok") => {
+            Some(p @ ("grok" | "chatgpt" | "codex")) => {
                 let store = TokenStore::load().ok_or_else(|| {
-                    io::Error::other(
-                        "SCRIBE_ORACLE=grok but no auth file — copy scribe-auth.json (or \
-                         riddle-auth.json from a `riddle-login grok` run) next to the binary",
-                    )
+                    io::Error::other(format!(
+                        "SCRIBE_ORACLE={p} but no auth file — copy scribe-auth.json (or \
+                         riddle-auth.json from a `riddle-login {p}` run) next to the binary",
+                    ))
                 })?;
-                return Self::grok(store);
+                let want = if p == "codex" { "chatgpt" } else { p };
+                if store.provider != want {
+                    return Err(io::Error::other(format!(
+                        "SCRIBE_ORACLE={p} but the auth file's provider is {} — redo the \
+                         login with `riddle-login {want}`",
+                        store.provider
+                    )));
+                }
+                return if want == "grok" { Self::grok(store) } else { Self::chatgpt(store) };
             }
             Some(other) => {
                 return Err(io::Error::other(format!(
-                    "unknown SCRIBE_ORACLE value {other} (openai|grok)"
+                    "unknown SCRIBE_ORACLE value {other} (openai|grok|chatgpt)"
                 )));
             }
             None => {}
@@ -98,18 +112,18 @@ impl Oracle {
             return Self::openai();
         }
         if let Some(store) = TokenStore::load() {
-            if store.provider == "grok" {
-                return Self::grok(store);
-            }
-            return Err(io::Error::other(format!(
-                "auth file provider {} is not supported by scribe (only grok); \
-                 set SCRIBE_OPENAI_KEY instead",
-                store.provider
-            )));
+            return match store.provider.as_str() {
+                "grok" => Self::grok(store),
+                "chatgpt" => Self::chatgpt(store),
+                other => Err(io::Error::other(format!(
+                    "auth file provider {other} is not supported by scribe (grok|chatgpt); \
+                     set SCRIBE_OPENAI_KEY instead"
+                ))),
+            };
         }
         Err(io::Error::other(
-            "no oracle configured — set SCRIBE_OPENAI_KEY in oracle.env, or copy a grok \
-             scribe-auth.json/riddle-auth.json next to the binary",
+            "no oracle configured — set SCRIBE_OPENAI_KEY in oracle.env, or copy a grok or \
+             chatgpt scribe-auth.json/riddle-auth.json next to the binary",
         ))
     }
 
@@ -129,6 +143,7 @@ impl Oracle {
             model,
             max_tokens: max_tokens_env(),
             reasoning: std::env::var("SCRIBE_REASONING").ok(),
+            codex: false,
         })
     }
 
@@ -146,12 +161,32 @@ impl Oracle {
             model,
             max_tokens: max_tokens_env(),
             reasoning: std::env::var("SCRIBE_REASONING").ok(),
+            codex: false,
+        })
+    }
+
+    fn chatgpt(store: TokenStore) -> io::Result<Self> {
+        // Must be a vision-capable Codex-endpoint model.
+        let model =
+            std::env::var("SCRIBE_CHATGPT_MODEL").unwrap_or_else(|_| "gpt-5.1".to_string());
+        eprintln!("scribe: oracle = ChatGPT subscription OAuth ({model})");
+        Ok(Self {
+            base: String::new(),
+            cred: Cred::OAuth(Arc::new(Mutex::new(store))),
+            model,
+            max_tokens: max_tokens_env(),
+            // "low" keeps the pen moving; "off" omits the field entirely.
+            reasoning: Some(std::env::var("SCRIBE_REASONING").unwrap_or_else(|_| "low".into())),
+            codex: true,
         })
     }
 
     /// One blocking round-trip: PNG in, reply text out. Call from a worker
     /// thread — token refresh + inference can take many seconds.
     pub fn ask(&self, png: &[u8]) -> io::Result<String> {
+        if self.codex {
+            return self.ask_codex(png);
+        }
         let key = self.cred.bearer()?;
         let img = base64(png);
         let reasoning_field = self
@@ -218,6 +253,107 @@ impl Oracle {
             .ok_or_else(|| io::Error::other(format!("no content in reply: {}", clip(&text, 300))))?;
         eprintln!("scribe: oracle replied in {}ms ({} chars)", asked.elapsed().as_millis(), reply.len());
         let reply = reply.trim();
+        if reply.is_empty() {
+            return Err(io::Error::other("empty reply"));
+        }
+        Ok(reply.to_string())
+    }
+
+    /// ChatGPT subscription round-trip (Codex Responses dialect). The backend
+    /// only streams; the SSE deltas are accumulated into one reply. Ported
+    /// from riddle's CodexOracle.
+    fn ask_codex(&self, png: &[u8]) -> io::Result<String> {
+        let (key, account) = match &self.cred {
+            Cred::OAuth(s) => {
+                let mut s = s.lock().unwrap();
+                (s.bearer()?, s.account_id.clone())
+            }
+            Cred::Key(k) => (k.clone(), None),
+        };
+        let img = base64(png);
+        let reasoning_field = self
+            .reasoning
+            .as_deref()
+            .filter(|r| !r.is_empty() && *r != "off")
+            .map(|r| format!("\"reasoning\":{{\"effort\":{}}},", json_quote(r)))
+            .unwrap_or_default();
+        // The ChatGPT backend requires store=false; the include keeps the
+        // stateless turn self-contained.
+        let body = format!(
+            concat!(
+                "{{\"model\":{},\"stream\":true,\"store\":false,{}",
+                "\"include\":[\"reasoning.encrypted_content\"],",
+                "\"instructions\":{},",
+                "\"input\":[",
+                "{{\"role\":\"user\",\"content\":[",
+                "{{\"type\":\"input_text\",\"text\":\"Here is the circled region.\"}},",
+                "{{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,{}\"}}",
+                "]}}]}}"
+            ),
+            json_quote(&self.model),
+            reasoning_field,
+            json_quote(SYSTEM_PROMPT),
+            img,
+        );
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(120))
+            .build();
+        // A per-process session id helps the backend route the stream.
+        let session =
+            format!("scribe-{}-{}", std::process::id(), crate::auth::now_secs());
+        let mut req = agent
+            .post("https://chatgpt.com/backend-api/codex/responses")
+            .set("Authorization", &format!("Bearer {key}"))
+            .set("Content-Type", "application/json")
+            .set("Accept", "text/event-stream")
+            .set("OpenAI-Beta", "responses=experimental")
+            .set("originator", "codex_cli_rs")
+            .set("session_id", &session);
+        if let Some(a) = &account {
+            req = req.set("chatgpt-account-id", a);
+        }
+
+        let asked = std::time::Instant::now();
+        let reader = match req.send_string(&body) {
+            Ok(r) => r.into_reader(),
+            Err(ureq::Error::Status(code, r)) => {
+                let detail = r.into_string().unwrap_or_default();
+                return Err(io::Error::other(format!("http {code}: {}", detail.trim())));
+            }
+            Err(e) => return Err(io::Error::other(format!("request failed: {e}"))),
+        };
+
+        let mut acc = String::new();
+        for line in BufReader::new(reader).lines().map_while(Result::ok) {
+            let line = line.trim();
+            let Some(data) = line.strip_prefix("data:") else { continue };
+            let data = data.trim();
+            if data == "[DONE]" {
+                break;
+            }
+            match json_str(data, "type").as_deref() {
+                Some("response.output_text.delta") => {
+                    if let Some(frag) = json_str(data, "delta") {
+                        acc.push_str(&frag);
+                    }
+                }
+                Some("response.failed") | Some("error") => {
+                    let msg =
+                        json_str(data, "message").unwrap_or_else(|| "the oracle failed".into());
+                    return Err(io::Error::other(msg));
+                }
+                Some("response.completed") => break,
+                _ => {}
+            }
+        }
+        eprintln!(
+            "scribe: oracle replied in {}ms ({} chars)",
+            asked.elapsed().as_millis(),
+            acc.len()
+        );
+        let reply = acc.trim();
         if reply.is_empty() {
             return Err(io::Error::other("empty reply"));
         }
