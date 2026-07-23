@@ -80,6 +80,21 @@ pub fn run() {
             eprintln!("scribe: done");
             return;
         }
+        Some("--erase-text-test") => {
+            let text = args.get(1).cloned().unwrap_or_else(|| "scribe was here".into());
+            let x: i32 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(120);
+            let y: i32 = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(200);
+            let pen = PenDevice::open_shared().expect("pen device");
+            let mut inj = Injector::open(pen.path()).expect("injector");
+            let font = load_font();
+            eprintln!("scribe: retrace-erasing test text at ({x},{y}) in 3s…");
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            for stroke in crate::script::layout(&font, &text, text_px(), (x, y), 1100) {
+                inj.erase_path(&stroke).expect("erase");
+            }
+            eprintln!("scribe: done");
+            return;
+        }
         Some("--probe-test") => {
             let pen = PenDevice::open_shared().expect("pen device");
             let mut inj = Injector::open(pen.path()).expect("injector");
@@ -145,7 +160,7 @@ pub fn run() {
         Some(other) => {
             eprintln!(
                 "unknown argument {other}\nusage: scribe [--observe | --oracle-test png | \
-                 --inject-test \"text\" | --erase-test x0 y0 x1 y1]"
+                 --inject-test \"text\" | --erase-text-test \"text\" | --erase-test x0 y0 x1 y1]"
             );
             std::process::exit(2);
         }

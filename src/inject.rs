@@ -26,6 +26,9 @@ pub struct Injector {
     pen_speed: u64,
     /// Eraser pass speed, px/s.
     erase_speed: u64,
+    /// Offset retrace passes per erase (1–5); fewer is faster, more covers
+    /// stray specks better.
+    erase_passes: usize,
 }
 
 impl Injector {
@@ -36,10 +39,15 @@ impl Injector {
             std::env::var("SCRIBE_INK_SPEED").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
         let erase_speed =
             std::env::var("SCRIBE_ERASE_SPEED").ok().and_then(|v| v.parse().ok()).unwrap_or(6000);
+        let erase_passes = std::env::var("SCRIBE_ERASE_PASSES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5)
+            .clamp(1, 5);
         eprintln!(
-            "scribe: injector on {dev_path} ({hz}Hz, pen {pen_speed}px/s, erase {erase_speed}px/s)"
+            "scribe: injector on {dev_path} ({hz}Hz, pen {pen_speed}px/s, erase {erase_speed}px/s, {erase_passes} erase passes)"
         );
-        Ok(Self { file, hz, pen_speed, erase_speed })
+        Ok(Self { file, hz, pen_speed, erase_speed, erase_passes })
     }
 
     fn frame(&mut self, events: &[(u16, u16, i32)]) -> io::Result<()> {
@@ -93,14 +101,16 @@ impl Injector {
         const OFFS: [(i32, i32); 5] = [(0, 0), (4, 3), (-4, -3), (3, -4), (-3, 4)];
         let mut combined: Vec<(i32, i32)> = Vec::with_capacity(sparse.len() * 5 + 20);
         scrub(first, &mut combined);
-        for (k, off) in OFFS.iter().enumerate() {
+        for (k, off) in OFFS.iter().take(self.erase_passes).enumerate() {
             if k % 2 == 0 {
                 combined.extend(sparse.iter().map(|&(x, y)| (x + off.0, y + off.1)));
             } else {
                 combined.extend(sparse.iter().rev().map(|&(x, y)| (x + off.0, y + off.1)));
             }
         }
-        scrub(last, &mut combined);
+        // The drag ends where the last pass ends: at `last` after an odd
+        // number of passes, back at `first` after an even number.
+        scrub(if self.erase_passes % 2 == 0 { first } else { last }, &mut combined);
         self.tool_stroke(&combined, BTN_TOOL_RUBBER, 2600, step)
     }
 
