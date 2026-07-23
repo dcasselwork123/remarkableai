@@ -9,10 +9,11 @@ holding the pen still ~1 s** sends the page to a vision LLM and the result is
 written back **as real notebook ink** (injected pen events — saves, syncs,
 undoes like the user's own). Working end-to-end on hardware since 2026-07-22.
 
-Sibling of the riddle fork at `C:\dev\remarkableapp\Riddle` (a takeover/qtfb
-*app*; scribe instead rides alongside xochitl). Reuses riddle's pen mapping,
-Grok OAuth, and handwriting synthesis. Repo:
-https://github.com/dcasselwork123/remarkableai (public).
+Sibling of riddle (a takeover/qtfb *app*; scribe instead rides alongside
+xochitl) — fresh checkout at `D:\Dev\RemarkableDiary` (has `riddle-login`,
+`src/bin/riddle-login.rs`; the copy at `D:\Dev\RemarkableApp\Riddle` is stale).
+Reuses riddle's pen mapping, subscription OAuth, and handwriting synthesis.
+Repo: https://github.com/dcasselwork123/remarkableai (public).
 
 ## The user experience
 
@@ -60,14 +61,21 @@ touch evdev (shared)  ─ gestures ────────┘   │ pen-up: tri
   then crude loop checks (closure ≤ 0.35·diag, path ≥ 1.4·diag, ≥60×30 px).
 - `src/inject.rs` — event injection. **140–500 Hz frames; speed comes from
   spatial step, not frame rate** (`step = speed/hz`, capped 40). Erase =
-  decimated waypoints (≤8 px), **5 offset passes** alternating direction
+  decimated waypoints (≤8 px), **1–5 offset passes** (`SCRIBE_ERASE_PASSES`,
+  default 5; 3 verified visually clean on-device) alternating direction
   (continuous path — a jump would erase a line through unrelated ink) +
-  endpoint scrub circles. 30 ms pauses at every tool transition (a dropped
-  transition leaves xochitl using the wrong tool → "ghosting").
-- `src/oracle.rs` — non-streaming chat-completions. Grok via auth.rs OAuth
-  (same store as riddle: `scribe-auth.json`, falls back to
-  `riddle-auth.json`, or `SCRIBE_AUTH_FILE`). The xAI refresh MUST echo
-  scope/plan/referrer (auth.rs) or the tier claim drops → 429 0/0. The
+  scrub circles at the drag's true endpoints (start point after an even pass
+  count). 30 ms pauses at every tool transition (a dropped transition leaves
+  xochitl using the wrong tool → "ghosting").
+- `src/oracle.rs` — three backends behind one blocking `ask`. (a) Grok via
+  auth.rs OAuth (same store as riddle: `scribe-auth.json`, falls back to
+  `riddle-auth.json`, or `SCRIBE_AUTH_FILE`) on `/chat/completions`; the xAI
+  refresh MUST echo scope/plan/referrer (auth.rs) or the tier claim drops →
+  429 0/0. (b) any OpenAI-compatible key. (c) ChatGPT subscription (Plus/Pro,
+  provider `chatgpt` auth file from `riddle-login chatgpt`): the Codex OAuth
+  client's Responses dialect at `chatgpt.com/backend-api/codex/responses`,
+  store=false + streamed SSE accumulated to one reply — ported from riddle's
+  CodexOracle, **compiles but untested end-to-end (no account)**. The
   SYSTEM_PROMPT defines the two-section page contract + DRAW protocol.
 - `src/drawing.rs` — DRAW reply parser (0–1000 space polylines) + placement
   (aspect-preserving, centered in the circle).
@@ -143,7 +151,10 @@ independently-refreshing copies would invalidate each other.
 ./scribe --inject-test "text" [x y]   # write text at a position
 ./scribe --divider-test               # draw the zone divider
 ./scribe --probe-test                 # 5 varied probes — the injection bisector
-./scribe --erase-test x0 y0 x1 y1     # zigzag-erase a rect
+./scribe --erase-test x0 y0 x1 y1     # zigzag-erase a rect (erase_area — NOT the real flow)
+./scribe --erase-text-test "text" [x y]  # retrace-erase laid-out text — the
+                                      # real flow's erase_path, for tuning
+                                      # SCRIBE_ERASE_SPEED/PASSES by eye
 SCRIBE_DEBUG_PEN=1 ./scribe           # log first 60 pen samples (raw+mapped)
 ```
 
@@ -151,9 +162,15 @@ SCRIBE_DEBUG_PEN=1 ./scribe           # log first 60 pen samples (raw+mapped)
 
 `SCRIBE_HOLD_MS` 900 · `SCRIBE_ZONE_Y` 1435 · `SCRIBE_TEXT_PX` 112 ·
 `SCRIBE_FRAME_HZ` 500 · `SCRIBE_INK_SPEED` 2000 · `SCRIBE_ERASE_SPEED` 6000 ·
-`SCRIBE_BOLD` 1 · `SCRIBE_FONT` path · `SCRIBE_GROK_MODEL` grok-4.3 ·
-`SCRIBE_OPENAI_KEY/BASE/MODEL` · `SCRIBE_ORACLE` grok|openai ·
-`SCRIBE_MAX_TOKENS` 1200 · `SCRIBE_REASONING`
+`SCRIBE_ERASE_PASSES` 5 · `SCRIBE_BOLD` 1 · `SCRIBE_FONT` path ·
+`SCRIBE_GROK_MODEL` grok-4.3 · `SCRIBE_CHATGPT_MODEL` gpt-5.1 ·
+`SCRIBE_OPENAI_KEY/BASE/MODEL` · `SCRIBE_ORACLE` grok|openai|chatgpt ·
+`SCRIBE_MAX_TOKENS` 1200 · `SCRIBE_REASONING` (defaults to `low` on chatgpt)
+
+The user's tablet runs values picked by eye in on-device A/B tests
+(2026-07-23): `SCRIBE_INK_SPEED=20000`, `SCRIBE_FRAME_HZ=500`,
+`SCRIBE_ERASE_SPEED=15000`, `SCRIBE_ERASE_PASSES=3`. These live ONLY in the
+tablet's `/home/root/scribe/oracle.env` — never clobber it when redeploying.
 
 ## Known limitations / next candidates
 
