@@ -155,12 +155,60 @@ pub fn run() {
             inj.erase_area(x0, y0, x1, y1).expect("erase");
             return;
         }
+        Some("--m-test") => {
+            // Draw five capital-M letterforms with numbers so the user can
+            // pick how deep the center groove should be (font→thin→trace
+            // currently flattens M into an H-lookalike).
+            let pen = PenDevice::open_shared().expect("pen device");
+            let mut inj = Injector::open(pen.path()).expect("injector");
+            let font = load_font();
+            eprintln!("scribe: drawing 5 M styles in 3s — open a blank notebook page…");
+            std::thread::sleep(std::time::Duration::from_secs(3));
+
+            for s in crate::script::layout(&font, "Pick an M  (1-5)", 56.0, (MARGIN, 120), 1100) {
+                inj.pen_stroke(&s).expect("header");
+            }
+            // Today's font pipeline M as a reference (usually reads as H).
+            for s in crate::script::layout(&font, "today:", 40.0, (MARGIN, 200), 200) {
+                inj.pen_stroke(&s).expect("today-label");
+            }
+            for s in crate::script::layout(&font, "M", 110.0, (MARGIN + 160, 185), 200) {
+                inj.pen_stroke(&s).expect("font-m");
+            }
+
+            // Five candidates: deeper center groove left→right by number.
+            // 1–3 block (4 strokes), 4–5 continuous single stroke.
+            let labels = ["1", "2", "3", "4", "5"];
+            let m_h = 160i32;
+            let row0 = 360i32;
+            let row_step = 240i32;
+            for (i, label) in labels.iter().enumerate() {
+                let y = row0 + i as i32 * row_step;
+                for s in crate::script::layout(&font, label, 64.0, (MARGIN, y + 40), 120) {
+                    inj.pen_stroke(&s).expect("num");
+                }
+                let mx = MARGIN + 160;
+                for s in crate::script::capital_m_variant(i, (mx, y), m_h) {
+                    inj.pen_stroke(&s).expect("m");
+                }
+                // A second M so the rhythm of repeated letters is visible.
+                for s in crate::script::capital_m_variant(i, (mx + 170, y), m_h) {
+                    inj.pen_stroke(&s).expect("m2");
+                }
+            }
+            eprintln!(
+                "scribe: done — pick 1..5 (valley depths {:?}). Tell me the number.",
+                crate::script::M_VALLEY_DEPTHS
+            );
+            return;
+        }
         Some("--observe") => daemon_loop(true),
         None => daemon_loop(false),
         Some(other) => {
             eprintln!(
                 "unknown argument {other}\nusage: scribe [--observe | --oracle-test png | \
-                 --inject-test \"text\" | --erase-text-test \"text\" | --erase-test x0 y0 x1 y1]"
+                 --inject-test \"text\" | --erase-text-test \"text\" | --erase-test x0 y0 x1 y1 | \
+                 --m-test]"
             );
             std::process::exit(2);
         }

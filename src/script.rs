@@ -50,11 +50,18 @@ pub fn rasterize_line(font: &FontRef, text: &str, px: f32) -> Line {
 }
 
 /// Measure the advance width of text at `px` without rasterizing.
+/// Capital `M` uses the hand-crafted glyph width (see [`capital_m`]).
 pub fn measure(font: &FontRef, text: &str, px: f32) -> f32 {
     let scaled = font.as_scaled(PxScale::from(px));
     let mut caret = 0.0f32;
     let mut prev: Option<ab_glyph::GlyphId> = None;
     for c in text.chars() {
+        if c == 'M' {
+            // Custom polyline glyph — no font kerning across it.
+            prev = None;
+            caret += capital_m_advance(px);
+            continue;
+        }
         let id = scaled.glyph_id(c);
         if let Some(p) = prev {
             caret += scaled.kern(p, id);
@@ -226,6 +233,9 @@ pub fn wrap(font: &FontRef, text: &str, px: f32, max_px: f32) -> Vec<String> {
 
 /// Turn a reply into screen-space pen strokes laid out from `origin`,
 /// wrapped to `max_w` px wide. Returns strokes in writing order.
+///
+/// Capital `M` is drawn with the hand-crafted continuous deep-V form
+/// ([`capital_m`]) so it doesn't collapse into an H under thinning.
 pub fn layout(
     font: &FontRef,
     text: &str,
@@ -239,23 +249,194 @@ pub fn layout(
         if line_text.is_empty() {
             continue;
         }
-        let mut line = rasterize_line(font, line_text, px);
-        thin(&mut line);
         let oy = origin.1 + i as i32 * line_h;
+        out.extend(layout_line(font, line_text, px, (origin.0, oy)));
+    }
+    out
+}
+
+/// Lay out one already-wrapped line, substituting custom capital-M strokes.
+fn layout_line(
+    font: &FontRef,
+    line_text: &str,
+    px: f32,
+    origin: (i32, i32),
+) -> Vec<Vec<(i32, i32)>> {
+    let mut out = Vec::new();
+    let mut caret = 0.0f32;
+    let mut run = String::new();
+
+    let flush_run = |run: &mut String, caret: &mut f32, out: &mut Vec<Vec<(i32, i32)>>| {
+        if run.is_empty() {
+            return;
+        }
+        let run_w = measure_font_only(font, run, px);
+        let mut line = rasterize_line(font, run, px);
+        thin(&mut line);
+        let ox = origin.0 + *caret as i32;
         for stroke in trace(&line) {
             let placed: Vec<(i32, i32)> = stroke
                 .into_iter()
                 .map(|(x, y)| {
                     (
-                        (origin.0 + x).clamp(0, crate::screen::SCREEN_W as i32 - 1),
-                        (oy + y).clamp(0, crate::screen::SCREEN_H as i32 - 1),
+                        (ox + x).clamp(0, crate::screen::SCREEN_W as i32 - 1),
+                        (origin.1 + y).clamp(0, crate::screen::SCREEN_H as i32 - 1),
                     )
                 })
                 .collect();
             out.push(placed);
         }
+        *caret += run_w;
+        run.clear();
+    };
+
+    for c in line_text.chars() {
+        if c == 'M' {
+            flush_run(&mut run, &mut caret, &mut out);
+            let m_h = capital_m_height(px);
+            let mx = origin.0 + caret as i32;
+            // Nudge down a hair so peaks sit with neighboring cap height.
+            let my = origin.1 + ((px - m_h as f32) * 0.15).round() as i32;
+            for s in capital_m((mx, my), m_h) {
+                let placed: Vec<(i32, i32)> = s
+                    .into_iter()
+                    .map(|(x, y)| {
+                        (
+                            x.clamp(0, crate::screen::SCREEN_W as i32 - 1),
+                            y.clamp(0, crate::screen::SCREEN_H as i32 - 1),
+                        )
+                    })
+                    .collect();
+                out.push(placed);
+            }
+            caret += capital_m_advance(px);
+        } else {
+            run.push(c);
+        }
     }
+    flush_run(&mut run, &mut caret, &mut out);
     out
+}
+
+/// Font-only advance (no custom-M substitution). Used when measuring a run
+/// that is known not to contain `M`.
+fn measure_font_only(font: &FontRef, text: &str, px: f32) -> f32 {
+    let scaled = font.as_scaled(PxScale::from(px));
+    let mut caret = 0.0f32;
+    let mut prev: Option<ab_glyph::GlyphId> = None;
+    for c in text.chars() {
+        let id = scaled.glyph_id(c);
+        if let Some(p) = prev {
+            caret += scaled.kern(p, id);
+        }
+        caret += scaled.h_advance(id);
+        prev = Some(id);
+    }
+    caret
+}
+
+// ── Capital-M letterforms ────────────────────────────────────────────────
+//
+// The font→thin→trace pipeline flattens Patrick Hand's "M" into something
+// that reads as "H" (center valley dies during Zhang-Suen). Hand-crafted
+// polylines keep a real V groove. User picked style #4 on-device (2026-07-29):
+// continuous single stroke, valley depth 0.78.
+
+/// Production capital-M: continuous stroke, deep center groove (pick #4).
+pub const M_VALLEY: f32 = 0.78;
+/// Glyph cell width as a fraction of letter height.
+const M_WIDTH_FRAC: f32 = 0.92;
+
+/// How far down the center valley sits (0=top, 1=baseline). Kept for
+/// `--m-test` A/B candidates; production uses [`M_VALLEY`].
+pub const M_VALLEY_DEPTHS: [f32; 5] = [0.42, 0.55, 0.68, 0.78, 0.88];
+
+fn capital_m_height(px: f32) -> i32 {
+    (px * 0.95).round().max(20.0) as i32
+}
+
+/// Horizontal advance for a capital M at font size `px`.
+pub fn capital_m_advance(px: f32) -> f32 {
+    capital_m_height(px) as f32 * M_WIDTH_FRAC
+}
+
+/// Sample a straight segment into dense waypoints (injection needs points).
+fn seg(a: (i32, i32), b: (i32, i32), step: i32) -> Vec<(i32, i32)> {
+    let dx = (b.0 - a.0) as f32;
+    let dy = (b.1 - a.1) as f32;
+    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+    let n = ((len / step.max(1) as f32).ceil() as i32).max(1);
+    (0..=n)
+        .map(|i| {
+            let t = i as f32 / n as f32;
+            (a.0 + (dx * t).round() as i32, a.1 + (dy * t).round() as i32)
+        })
+        .collect()
+}
+
+/// Four-stroke block capital M (used by `--m-test` styles 1–3).
+pub fn capital_m_block(origin: (i32, i32), h: i32, valley: f32) -> Vec<Vec<(i32, i32)>> {
+    let h = h.max(20);
+    let w = ((h as f32) * M_WIDTH_FRAC).round() as i32;
+    let (ox, oy) = origin;
+    let v = valley.clamp(0.30, 0.92);
+    let top = oy + (h as f32 * 0.06).round() as i32;
+    let bot = oy + h - (h as f32 * 0.04).round() as i32;
+    let mid_x = ox + w / 2;
+    let mid_y = top + ((bot - top) as f32 * v).round() as i32;
+    let left = ox + (w as f32 * 0.06).round() as i32;
+    let right = ox + w - (w as f32 * 0.06).round() as i32;
+    let step = (h / 28).max(2);
+    vec![
+        seg((left, bot), (left, top), step),
+        seg((left, top), (mid_x, mid_y), step),
+        seg((mid_x, mid_y), (right, top), step),
+        seg((right, top), (right, bot), step),
+    ]
+}
+
+/// Single continuous pen stroke: bottom-left → top-left → valley → top-right
+/// → bottom-right.
+pub fn capital_m_continuous(origin: (i32, i32), h: i32, valley: f32) -> Vec<Vec<(i32, i32)>> {
+    let h = h.max(20);
+    let w = ((h as f32) * M_WIDTH_FRAC).round() as i32;
+    let (ox, oy) = origin;
+    let v = valley.clamp(0.30, 0.92);
+    let top = oy + (h as f32 * 0.06).round() as i32;
+    let bot = oy + h - (h as f32 * 0.04).round() as i32;
+    let mid_x = ox + w / 2;
+    let mid_y = top + ((bot - top) as f32 * v).round() as i32;
+    let left = ox + (w as f32 * 0.06).round() as i32;
+    let right = ox + w - (w as f32 * 0.06).round() as i32;
+    let step = (h / 28).max(2);
+    let mut path = Vec::new();
+    for p in [
+        seg((left, bot), (left, top), step),
+        seg((left, top), (mid_x, mid_y), step),
+        seg((mid_x, mid_y), (right, top), step),
+        seg((right, top), (right, bot), step),
+    ] {
+        if path.is_empty() {
+            path = p;
+        } else {
+            path.extend(p.into_iter().skip(1));
+        }
+    }
+    vec![path]
+}
+
+/// Production capital M (user pick #4: continuous, valley 0.78).
+pub fn capital_m(origin: (i32, i32), h: i32) -> Vec<Vec<(i32, i32)>> {
+    capital_m_continuous(origin, h, M_VALLEY)
+}
+
+/// On-device A/B candidates for `--m-test`. Styles 1–3 block; 4–5 continuous.
+pub fn capital_m_variant(index: usize, origin: (i32, i32), h: i32) -> Vec<Vec<(i32, i32)>> {
+    let valley = M_VALLEY_DEPTHS.get(index).copied().unwrap_or(M_VALLEY);
+    match index {
+        0 | 1 | 2 => capital_m_block(origin, h, valley),
+        _ => capital_m_continuous(origin, h, valley),
+    }
 }
 
 #[cfg(test)]
@@ -284,5 +465,43 @@ mod tests {
         assert!(min_x >= 200, "text starts at the origin");
         assert!(min_y >= 400);
         assert!(max_y > 460, "long text should wrap to multiple lines (max_y={max_y})");
+    }
+
+    #[test]
+    fn capital_m_variants_have_deep_valley() {
+        for i in 0..5 {
+            let strokes = capital_m_variant(i, (100, 200), 120);
+            assert!(!strokes.is_empty(), "variant {i}");
+            let max_y = strokes.iter().flatten().map(|p| p.1).max().unwrap();
+            let min_y = strokes.iter().flatten().map(|p| p.1).min().unwrap();
+            let mid_x = 100 + ((120.0 * M_WIDTH_FRAC) as i32) / 2;
+            let near_mid: Vec<_> = strokes
+                .iter()
+                .flatten()
+                .filter(|(x, _)| (*x - mid_x).abs() <= 4)
+                .map(|p| p.1)
+                .collect();
+            assert!(!near_mid.is_empty(), "variant {i} has a center point");
+            let valley_y = near_mid.iter().copied().max().unwrap();
+            let depth = (valley_y - min_y) as f32 / (max_y - min_y).max(1) as f32;
+            assert!(
+                depth >= 0.30,
+                "variant {i} valley depth {depth:.2} should be a real groove"
+            );
+        }
+    }
+
+    #[test]
+    fn layout_uses_custom_capital_m() {
+        let font = FontRef::try_from_slice(include_bytes!("../fonts/PatrickHand-Regular.ttf")).unwrap();
+        let strokes = layout(&font, "MAM", 80.0, (200, 300), 800);
+        assert!(!strokes.is_empty());
+        // Production M is a single continuous stroke per letter — "MAM" has
+        // two custom Ms plus font strokes for A; at least 2 long M strokes.
+        let long = strokes.iter().filter(|s| s.len() >= 20).count();
+        assert!(long >= 2, "expected continuous M strokes, got {long} long paths");
+        // Custom M advance is used in measure.
+        let w = measure(&font, "M", 80.0);
+        assert!((w - capital_m_advance(80.0)).abs() < 0.5);
     }
 }
